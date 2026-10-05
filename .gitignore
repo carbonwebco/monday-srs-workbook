@@ -1,0 +1,13 @@
+.DS_Store
+node_modules/
+dist/
+
+# Client source material and local design-tool exports: never commit
+uploads/
+_ds/
+Solution Hub.html
+Technical Inspo.dc.html
+support.js
+.thumbnail
+github.md
+.claude/
