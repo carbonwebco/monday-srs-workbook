@@ -471,8 +471,8 @@
         (col(it, "Notation") ? '<span class="dg-notation">' + esc(col(it, "Notation")) + "</span>" : "") + reviewPill(col(it, "Status")) + "</div></header>" +
         (col(it, "Purpose") ? '<p class="dg-purpose">' + linkify(col(it, "Purpose")) + "</p>" : "") +
         (col(it, "Traces") ? '<div class="dg-traces"><b>Traces</b> ' + linkify(col(it, "Traces")) + "</div>" : "") +
-        '<div class="dg-canvas" data-mmd="' + esc(it.id) + '">' + (src ? '<div class="dg-loading">Rendering\u2026</div>' : '<div class="dg-err">No Mermaid source on this item.</div>') + "</div>" +
-        (src ? '<div class="dg-actions"><button class="btn-sec" data-dg-src="' + esc(it.id) + '">' + (open ? "Hide source" : "View source") + '</button><button class="btn-sec" data-dg-copy="' + esc(it.id) + '">Copy source</button></div>' : "") +
+        '<div class="dg-canvas" data-mmd="' + esc(it.id) + '"' + (src ? ' data-dg-open="' + esc(it.id) + '" title="Open full screen"' : "") + ">" + (src ? '<div class="dg-loading">Rendering\u2026</div>' : '<div class="dg-err">No Mermaid source on this item.</div>') + "</div>" +
+        (src ? '<div class="dg-actions"><button class="btn-sec btn-primary" data-dg-open="' + esc(it.id) + '">\u2922 Full screen</button><button class="btn-sec" data-dg-src="' + esc(it.id) + '">' + (open ? "Hide source" : "View source") + '</button><button class="btn-sec" data-dg-copy="' + esc(it.id) + '">Copy source</button></div>' : "") +
         (open && src ? '<pre class="dg-src">' + esc(src) + "</pre>" : "") +
         "</article>";
     }).join("") + "</div>";
@@ -487,6 +487,9 @@
         if (!src || !navigator.clipboard) return;
         navigator.clipboard.writeText(src).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy source"; }, 1400); }, function () {});
       };
+    });
+    root.querySelectorAll("[data-dg-open]").forEach(function (b) {
+      b.onclick = function (e) { if (!e.target.closest("[data-dg-retry]")) openViewer(b.getAttribute("data-dg-open")); };
     });
     renderMermaidAll();
   }
@@ -547,7 +550,7 @@
           if (state.svgCache[key]) { n.innerHTML = state.svgCache[key]; return; }
           return renderOne(src, 0).then(function (res) {
             if (!document.body.contains(n)) return;
-            if (!res.error) { state.svgCache[key] = res.svg; n.innerHTML = res.svg; return; }
+            if (!res.error) { state.svgCache[key] = res.svg; n.innerHTML = res.svg; if (vw.open && vw.id === it.id && vw.key !== key) loadViewer(it.id, true); return; }
             if (res.error === "syntax") n.innerHTML = '<div class="dg-err"><b>Mermaid syntax error.</b> ' + esc(res.msg) + "</div>";
             else if (res.error === "layout") n.innerHTML = res.svg;
             else n.innerHTML = '<div class="dg-err"><b>Couldn\u2019t lay out this diagram.</b> ' + esc(res.msg || "") + ' <button class="btn-sec" data-dg-retry>Retry</button></div>';
@@ -557,6 +560,213 @@
         });
       });
     });
+  }
+
+  // ---------- diagram viewer (full screen; drag to pan, wheel / pinch / buttons to zoom) ----------
+  // Lives outside #app so board re-renders don't close it. Clicking a labelled node jumps to its token.
+  var vw = { open: false, el: null, id: null, ids: [], key: "", k: 1, x: 0, y: 0, w: 0, h: 0, fitted: true, ptrs: {}, pinch: null, moved: 0, lastFocus: null };
+  var VW_MIN = 0.1, VW_MAX = 8;
+  function getSvg(it) {
+    var src = dgSrc(it), key = state.theme + "|" + it.id + "|" + hash(src);
+    if (state.svgCache[key]) return Promise.resolve({ svg: state.svgCache[key], key: key });
+    if (!window.mermaid) return Promise.resolve({ error: "Diagram renderer unavailable.", key: key });
+    if (!mmdReady) { initMermaid(); mmdReady = true; }
+    return renderOne(src, 0).then(function (res) {
+      if (res.error && res.error !== "layout") return { error: res.msg || "Couldn’t render this diagram.", key: key };
+      if (!res.error) state.svgCache[key] = res.svg;
+      return { svg: res.svg, key: key };
+    });
+  }
+  function buildViewer() {
+    var el = document.createElement("div");
+    el.className = "vw"; el.hidden = true;
+    el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true"); el.setAttribute("aria-labelledby", "vw-title");
+    var fs = document.fullscreenEnabled ? '<button class="vw-btn" data-vw="fs" title="Expand to the whole screen (F)">Full screen</button>' : "";
+    el.innerHTML =
+      '<header class="vw-bar">' +
+        '<div class="vw-head"><div class="vw-title" id="vw-title"></div><div class="vw-purpose"></div></div>' +
+        '<div class="vw-tools">' +
+          '<div class="vw-grp"><button class="vw-btn" data-vw="prev" title="Previous diagram (←)" aria-label="Previous diagram">‹</button><span class="vw-pos"></span><button class="vw-btn" data-vw="next" title="Next diagram (→)" aria-label="Next diagram">›</button></div>' +
+          '<div class="vw-grp"><button class="vw-btn" data-vw="out" title="Zoom out (−)" aria-label="Zoom out">−</button><button class="vw-btn vw-zoom" data-vw="actual" title="Actual size (1)">100%</button><button class="vw-btn" data-vw="in" title="Zoom in (+)" aria-label="Zoom in">+</button><button class="vw-btn" data-vw="fit" title="Fit to screen (0)">Fit</button></div>' +
+          '<div class="vw-grp"><button class="vw-btn" data-vw="src" aria-pressed="false" title="Show Mermaid source (S)">Source</button><button class="vw-btn" data-vw="copy">Copy source</button><button class="vw-btn" data-vw="dl">Download SVG</button>' + fs + "</div>" +
+          '<button class="vw-btn vw-close" data-vw="close" title="Close (Esc)" aria-label="Close">✕</button>' +
+        "</div>" +
+      "</header>" +
+      '<div class="vw-body"><div class="vw-stage" tabindex="-1"><div class="vw-pan"></div></div><pre class="vw-src" hidden></pre></div>' +
+      '<footer class="vw-hint">Drag to pan · scroll or pinch to zoom · click a highlighted node to open it · Esc to close</footer>';
+    document.body.appendChild(el);
+    vw.el = el;
+    el.querySelectorAll("[data-vw]").forEach(function (b) { b.onclick = function () { viewerAction(b.getAttribute("data-vw"), b); }; });
+    var stage = el.querySelector(".vw-stage");
+    stage.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      var r = stage.getBoundingClientRect();
+      zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
+    }, { passive: false });
+    stage.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0) return;
+      stage.setPointerCapture(e.pointerId);
+      vw.ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
+      if (Object.keys(vw.ptrs).length === 1) vw.moved = 0;
+      vw.pinch = null; stage.classList.add("grabbing");
+    });
+    stage.addEventListener("pointermove", function (e) {
+      var p = vw.ptrs[e.pointerId]; if (!p) return;
+      var ids = Object.keys(vw.ptrs);
+      if (ids.length === 1) {
+        vw.x += e.clientX - p.x; vw.y += e.clientY - p.y;
+        vw.moved += Math.abs(e.clientX - p.x) + Math.abs(e.clientY - p.y);
+        p.x = e.clientX; p.y = e.clientY; vw.fitted = false; applyView();
+        return;
+      }
+      p.x = e.clientX; p.y = e.clientY; vw.moved += 10;
+      var a = vw.ptrs[ids[0]], b = vw.ptrs[ids[1]], r = stage.getBoundingClientRect();
+      var d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
+      if (vw.pinch) { vw.x += mx - vw.pinch.mx; vw.y += my - vw.pinch.my; zoomAt(d / vw.pinch.d, mx, my); }
+      vw.pinch = { d: d, mx: mx, my: my };
+    });
+    function up(e) {
+      if (!vw.ptrs[e.pointerId]) return;
+      delete vw.ptrs[e.pointerId]; vw.pinch = null;
+      if (!Object.keys(vw.ptrs).length) stage.classList.remove("grabbing");
+      if (e.type === "pointerup" && vw.moved < 6 && !Object.keys(vw.ptrs).length) {
+        var t = document.elementFromPoint(e.clientX, e.clientY), link = t && t.closest && t.closest("[data-vw-tok]");
+        if (link) { var tok = link.getAttribute("data-vw-tok"); closeViewer(); goToToken(tok); }
+      }
+    }
+    stage.addEventListener("pointerup", up);
+    stage.addEventListener("pointercancel", up);
+    stage.addEventListener("dblclick", function (e) { var r = stage.getBoundingClientRect(); zoomAt(2, e.clientX - r.left, e.clientY - r.top); });
+    document.addEventListener("keydown", viewerKey);
+    window.addEventListener("resize", function () { if (vw.open && vw.fitted) fitView(); });
+    document.addEventListener("fullscreenchange", function () {
+      var b = el.querySelector('[data-vw="fs"]'); if (b) b.textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+      if (vw.open) setTimeout(fitView, 60);
+    });
+  }
+  function openViewer(id) {
+    if (!findItem("diagrams", id)) return;
+    if (!vw.el) buildViewer();
+    vw.ids = items("diagrams").filter(function (it) { return dgSrc(it) && (state.dgFilter === "All" || dgType(it) === state.dgFilter); }).map(function (it) { return it.id; });
+    if (vw.ids.indexOf(id) === -1) vw.ids = [id];
+    vw.lastFocus = document.activeElement; vw.open = true;
+    vw.el.hidden = false; document.documentElement.classList.add("vw-lock");
+    loadViewer(id);
+    vw.el.querySelector('[data-vw="close"]').focus();
+  }
+  function closeViewer() {
+    if (!vw.open) return;
+    if (document.fullscreenElement === vw.el && document.exitFullscreen) document.exitFullscreen().catch(function () {});
+    vw.open = false; vw.el.hidden = true; vw.ptrs = {};
+    document.documentElement.classList.remove("vw-lock");
+    if (vw.lastFocus && document.body.contains(vw.lastFocus)) vw.lastFocus.focus();
+  }
+  function loadViewer(id, keepView) {
+    var it = findItem("diagrams", id); if (!it) return closeViewer();
+    vw.id = id;
+    var el = vw.el, pan = el.querySelector(".vw-pan"), i = vw.ids.indexOf(id);
+    el.querySelector(".vw-title").innerHTML = '<span class="tok-plain">' + esc(tokenOf(it.name) || "") + '</span><span class="vw-name">' + esc(nameRest(it.name)) + '</span><span class="pill">' + esc(dgType(it)) + "</span>" + reviewPill(col(it, "Status"));
+    el.querySelector(".vw-purpose").textContent = col(it, "Purpose") || "";
+    el.querySelector(".vw-pos").textContent = (i + 1) + " / " + vw.ids.length;
+    el.querySelector('[data-vw="prev"]').disabled = el.querySelector('[data-vw="next"]').disabled = vw.ids.length < 2;
+    el.querySelector(".vw-src").textContent = dgSrc(it) || "";
+    if (!keepView) pan.innerHTML = '<div class="dg-loading">Rendering…</div>';
+    getSvg(it).then(function (res) {
+      if (!vw.open || vw.id !== id) return;
+      vw.key = res.key;
+      if (res.error) { pan.innerHTML = '<div class="dg-err">' + esc(res.error) + "</div>"; pan.style.transform = ""; return; }
+      pan.innerHTML = res.svg;
+      var svg = pan.querySelector("svg"), vb = svg && svg.viewBox && svg.viewBox.baseVal;
+      if (!svg || !vb || !vb.width) return;
+      // Fresh ids so markers and scoped styles don't collide with the card copy underneath.
+      var sid = svg.id, nid = sid + "-vw";
+      if (sid) { svg.id = nid; svg.querySelectorAll("style").forEach(function (s) { s.textContent = s.textContent.split("#" + sid).join("#" + nid); }); }
+      svg.removeAttribute("style"); svg.setAttribute("width", vb.width); svg.setAttribute("height", vb.height);
+      vw.w = vb.width; vw.h = vb.height;
+      markTokens(svg);
+      if (!keepView || vw.fitted) fitView(); else applyView();
+    });
+  }
+  function markTokens(svg) {
+    svg.querySelectorAll("g.node, g.edgeLabel, g.cluster, g.actor-top, g.actor, text.actor").forEach(function (g) {
+      if (g.parentNode && g.parentNode.closest && g.parentNode.closest("[data-vw-tok]")) return;
+      var m = (g.textContent || "").match(TOKEN_RE) || [];
+      for (var i = 0; i < m.length; i++) if (state.registry[m[i]]) {
+        g.setAttribute("data-vw-tok", m[i]); g.classList.add("vw-link");
+        var t = document.createElementNS("http://www.w3.org/2000/svg", "title"); t.textContent = "Open " + m[i];
+        g.insertBefore(t, g.firstChild); return;
+      }
+    });
+  }
+  function applyView() {
+    vw.el.querySelector(".vw-pan").style.transform = "translate(" + vw.x + "px," + vw.y + "px) scale(" + vw.k + ")";
+    vw.el.querySelector(".vw-zoom").textContent = Math.round(vw.k * 100) + "%";
+  }
+  function fitView() {
+    if (!vw.w) return;
+    var r = vw.el.querySelector(".vw-stage").getBoundingClientRect(), pad = 40;
+    vw.k = Math.max(VW_MIN, Math.min((r.width - pad * 2) / vw.w, (r.height - pad * 2) / vw.h, 2));
+    vw.x = (r.width - vw.w * vw.k) / 2; vw.y = (r.height - vw.h * vw.k) / 2; vw.fitted = true;
+    applyView();
+  }
+  function zoomAt(f, cx, cy) {
+    var k = Math.max(VW_MIN, Math.min(VW_MAX, vw.k * f)); f = k / vw.k;
+    vw.x = cx - (cx - vw.x) * f; vw.y = cy - (cy - vw.y) * f; vw.k = k; vw.fitted = false;
+    applyView();
+  }
+  function zoomCenter(f) { var r = vw.el.querySelector(".vw-stage").getBoundingClientRect(); zoomAt(f, r.width / 2, r.height / 2); }
+  function stepViewer(d) {
+    if (vw.ids.length < 2) return;
+    var i = (vw.ids.indexOf(vw.id) + d + vw.ids.length) % vw.ids.length;
+    loadViewer(vw.ids[i]);
+  }
+  function viewerAction(a, btn) {
+    var it = findItem("diagrams", vw.id), src = it && dgSrc(it);
+    if (a === "close") closeViewer();
+    else if (a === "prev") stepViewer(-1);
+    else if (a === "next") stepViewer(1);
+    else if (a === "in") zoomCenter(1.25);
+    else if (a === "out") zoomCenter(0.8);
+    else if (a === "fit") fitView();
+    else if (a === "actual") zoomCenter(1 / vw.k);
+    else if (a === "src") {
+      var pre = vw.el.querySelector(".vw-src"); pre.hidden = !pre.hidden;
+      btn.setAttribute("aria-pressed", String(!pre.hidden)); if (vw.fitted) setTimeout(fitView, 0);
+    } else if (a === "copy") {
+      if (src && navigator.clipboard) navigator.clipboard.writeText(src).then(function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy source"; }, 1400); }, function () {});
+    } else if (a === "dl") {
+      var svg = vw.el.querySelector(".vw-pan svg"); if (!svg) return;
+      var xml = new XMLSerializer().serializeToString(svg);
+      if (!/xmlns=/.test(xml)) xml = xml.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+      var url = URL.createObjectURL(new Blob([xml], { type: "image/svg+xml" })), link = document.createElement("a");
+      link.href = url; link.download = ((tokenOf(it.name) || "diagram") + " " + nameRest(it.name)).replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") + ".svg";
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } else if (a === "fs") {
+      if (document.fullscreenElement) document.exitFullscreen().catch(function () {});
+      else if (vw.el.requestFullscreen) vw.el.requestFullscreen().catch(function () {});
+    }
+  }
+  function viewerKey(e) {
+    if (!vw.open || e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key;
+    if (k === "Escape") { if (!document.fullscreenElement) closeViewer(); }
+    else if (k === "Tab") {
+      var f = Array.prototype.filter.call(vw.el.querySelectorAll("button"), function (b) { return !b.disabled && b.offsetParent; });
+      if (!f.length) return;
+      if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+      return;
+    } else if (k === "ArrowLeft") stepViewer(-1);
+    else if (k === "ArrowRight") stepViewer(1);
+    else if (k === "+" || k === "=") zoomCenter(1.25);
+    else if (k === "-" || k === "_") zoomCenter(0.8);
+    else if (k === "0") fitView();
+    else if (k === "1") zoomCenter(1 / vw.k);
+    else if (k === "s" || k === "S") viewerAction("src", vw.el.querySelector('[data-vw="src"]'));
+    else if ((k === "f" || k === "F") && document.fullscreenEnabled) viewerAction("fs");
+    else return;
+    e.preventDefault();
   }
 
   function emptyGroup(title) {
@@ -595,6 +805,7 @@
     document.documentElement.setAttribute("data-theme", t);
     if (t !== state.theme) {
       state.theme = t; mmdReady = false;
+      if (vw.open) loadViewer(vw.id, true);
       if (state.board && !state.loading && state.activeTab === "diagrams") render();
     }
   }

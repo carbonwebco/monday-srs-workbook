@@ -124,7 +124,10 @@ their row (tab switch + row flash).
 - `listen("events")` re-fetches (400 ms debounce); `listen("context")` re-themes.
 - API error: one retry, then inline error with Retry.
 - Empty board: setup checklist.
-- Diagrams: Mermaid, rendered locally and themed per monday theme; View source / Copy source per card.
+- Diagrams: Mermaid, rendered locally and themed per monday theme; Full screen / View source / Copy source per card.
+- Full-screen viewer (click a diagram or Full screen): drag to pan; scroll, pinch or +/− to zoom; 0 fits, 1 is 100%;
+  ←/→ steps through the diagrams in the current filter; S toggles source; Download SVG; F uses the browser's full screen;
+  Esc closes. Nodes whose labels contain a known token are highlighted and jump to that row when clicked.
 
 ## Diagram authoring standard
 
